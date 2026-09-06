@@ -285,7 +285,8 @@ class AccountPool:
         if is_auth:
             category, cooldown = "auth", 600.0
         elif is_busy:
-            category, cooldown = "busy", 60.0
+            # 官方通道的 429 是并发超限（瞬时），冷却时间远小于网页通道的忙碌
+            category, cooldown = "busy", 15.0 if rt.is_official else 60.0
         elif is_network:
             category, cooldown = "network", 30.0
         else:

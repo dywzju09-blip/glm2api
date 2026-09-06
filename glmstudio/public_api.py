@@ -138,6 +138,30 @@ def call_with_failover(pool: AccountPool, payload: dict[str, Any], stream: bool,
         try:
             result, kind = _invoke_chat(rt, payload, stream)
             return rt, result, kind
+        except UpstreamAPIError as exc:
+            status = getattr(exc, "status_code", None)
+            # 官方通道的 429 是并发超限，瞬时性的：退避后在原账号重试，
+            # 等并发的其他请求完成腾出槽位，而不是冷却换号（单账号池会 503）。
+            if status == 429 and rt.is_official:
+                for attempt in range(3):
+                    time.sleep(1.5)
+                    try:
+                        result, kind = _invoke_chat(rt, payload, stream)
+                        logger.info("官方通道并发超限重试成功 attempt=%s account=%s", attempt + 1, rt.id)
+                        return rt, result, kind
+                    except UpstreamAPIError as retry_exc:
+                        exc = retry_exc
+                        if getattr(retry_exc, "status_code", None) != 429:
+                            break
+                pool.mark_failure(rt.id, exc)
+                exclude.add(rt.id)
+                last_exc = exc
+                logger.warning("官方通道重试后仍失败 account=%s error=%s", rt.id, str(exc)[:200])
+                continue
+            pool.mark_failure(rt.id, exc)
+            exclude.add(rt.id)
+            last_exc = exc
+            logger.warning("账号调用失败，切换下一个 id=%s error=%s", rt.id, str(exc)[:200])
         except Exception as exc:  # noqa: BLE001 — 需要按任意上游错误切换账号
             pool.mark_failure(rt.id, exc)
             exclude.add(rt.id)
