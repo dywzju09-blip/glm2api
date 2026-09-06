@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import APIRouter, Body, HTTPException, Request
 
 from . import __version__
+from . import quota as quota_mod
 from .db import Database
 from .pool import AccountPool, WEB_MODELS, generate_api_key
 
@@ -43,6 +44,30 @@ def login(request: Request, payload: dict = Body(...)):
     return {"ok": True, "version": __version__}
 
 
+def _parse_quota(row: dict[str, Any]) -> dict[str, Any] | None:
+    import json as _json
+    raw = str(row.get("quota_json") or "")
+    if not raw:
+        return None
+    try:
+        data = _json.loads(raw)
+        return data if isinstance(data, dict) and data.get("windows") else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _refresh_quota(db: Database, row: dict[str, Any]) -> str:
+    """拉取官方账号的 CodingPlan 真实额度并存库，返回错误信息（空=成功）。"""
+    if row["type"] != "official":
+        return ""
+    try:
+        data = quota_mod.fetch_plan_quota(row["secret"], row["base_url"])
+        db.save_quota(int(row["id"]), data)
+        return ""
+    except Exception as exc:  # noqa: BLE001
+        return f"额度拉取失败: {str(exc)[:150]}"
+
+
 def _account_view(db: Database, pool: AccountPool, row: dict[str, Any]) -> dict[str, Any]:
     usage = db.account_window_usage(int(row["id"]))
     total_7d = usage["ok_7d"] + usage["err_7d"]
@@ -64,6 +89,7 @@ def _account_view(db: Database, pool: AccountPool, row: dict[str, Any]) -> dict[
             "limit_5h", "limit_7d", "limit_daily", "fail_count", "last_error",
             "last_used_at", "created_at")},
         "secret_preview": _mask_secret(str(row["secret"])),
+        "quota": _parse_quota(row),
         "state": state,
         "cooldown_left": round(cooldown_left),
         "usage": usage,
@@ -93,7 +119,7 @@ def overview(request: Request):
             "keys_active": db.count_active_keys(),
             "open_mode": db.count_active_keys() == 0,
         },
-        "accounts": [_account_view(db, pool, row) for row in accounts],
+        "daily": db.daily_usage(14),
         "models": {"web": WEB_MODELS, "official": pool.settings.get("official_models", [])},
     }
 
@@ -132,6 +158,9 @@ def create_account(request: Request, payload: dict = Body(...)):
         "limit_7d": int(payload.get("limit_7d", 0) or 0),
         "limit_daily": int(payload.get("limit_daily", 0) or 0),
     })
+    if account_type == "official":
+        _refresh_quota(state.db, row)  # 新增官方账号时立即拉取 CodingPlan 真实额度
+        row = state.db.get_account(int(row["id"])) or row
     state.pool.reload()
     logger.info("新增账号 id=%s name=%s type=%s", row["id"], name, account_type)
     return {"account": _account_view(state.db, state.pool, row)}
@@ -179,7 +208,27 @@ def test_account(request: Request, account_id: int):
     if state.db.get_account(account_id) is None:
         raise HTTPException(404, "账号不存在")
     result = state.pool.test_account(account_id)
+    row = state.db.get_account(account_id)
+    if row and row["type"] == "official":
+        quota_err = _refresh_quota(state.db, row)
+        if quota_err:
+            result.setdefault("message", "")
+            result["message"] = (str(result.get("message", "")) + "；" + quota_err).strip("；")
     return result
+
+
+@router.post("/accounts/{account_id}/quota")
+def refresh_quota(request: Request, account_id: int):
+    _admin(request)
+    state = request.app.state
+    row = state.db.get_account(account_id)
+    if row is None:
+        raise HTTPException(404, "账号不存在")
+    err = _refresh_quota(state.db, row)
+    if err:
+        raise HTTPException(502, err)
+    row = state.db.get_account(account_id)
+    return {"ok": True, "quota": _parse_quota(row or {})}
 
 
 # ---------------- 对外 Key ----------------

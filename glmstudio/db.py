@@ -84,6 +84,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "cogview-4-250304", "cogview-3-flash",
     ],
     "official_base_url": "https://open.bigmodel.cn/api/paas/v4",
+    # 上游套餐（如 CodingPlan）额度参考值，仅用于进度条展示；0 = 不显示进度条
+    "plan_limit_5h_prompts": 0,
+    "plan_limit_7d_prompts": 0,
     "delete_conversation": True,
     "busy_max_retries": 8,
     "busy_retry_interval": 2.0,
@@ -112,7 +115,15 @@ class Database:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.executescript(_SCHEMA)
+            self._migrate()
             self._conn.commit()
+
+    def _migrate(self) -> None:
+        cols = {row["name"] for row in self.query("PRAGMA table_info(accounts)")}
+        if "quota_json" not in cols:
+            self._conn.execute("ALTER TABLE accounts ADD COLUMN quota_json TEXT NOT NULL DEFAULT ''")
+        if "quota_at" not in cols:
+            self._conn.execute("ALTER TABLE accounts ADD COLUMN quota_at REAL NOT NULL DEFAULT 0")
 
     # ---------- 基础 ----------
     def execute(self, sql: str, params: tuple = ()) -> None:
@@ -221,6 +232,16 @@ class Database:
                 " WHERE id=?",
                 (fail_count, cooldown_until, last_error[:500], 1 if disable else 0,
                  time.time(), account_id),
+            )
+            self._conn.commit()
+
+    def save_quota(self, account_id: int, quota: dict) -> None:
+        import json as _json
+        with self._lock:
+            self._conn.execute(
+                "UPDATE accounts SET quota_json=?, quota_at=? WHERE id=?",
+                (_json.dumps(quota, ensure_ascii=False), quota.get("updated_at", time.time()),
+                 account_id),
             )
             self._conn.commit()
 
@@ -350,6 +371,40 @@ class Database:
             "SELECT COUNT(*) AS c FROM usage_events WHERE key_id=? AND ts>?",
             (key_id, time.time() - seconds))
         return int(row["c"] or 0) if row else 0
+
+    def plan_window_usage(self) -> dict[str, int]:
+        """整个上游套餐的滚动窗口用量（全部 Key、全部账号合计）。"""
+        now = time.time()
+        out = {"req_5h": 0, "tokens_5h": 0, "req_7d": 0, "tokens_7d": 0}
+        for row in self.query(
+            "SELECT"
+            " SUM(CASE WHEN ts>? THEN 1 ELSE 0 END) AS req_5h,"
+            " SUM(CASE WHEN ts>? THEN total_tokens ELSE 0 END) AS tokens_5h,"
+            " COUNT(*) AS req_7d, SUM(total_tokens) AS tokens_7d"
+            " FROM usage_events WHERE ts>? AND status='success'",
+            (now - 5 * 3600, now - 5 * 3600, now - 7 * 86400),
+        ):
+            out.update({k: int(row[k] or 0) for k in out})
+        return out
+
+    def daily_usage(self, days: int = 14) -> list[dict[str, Any]]:
+        """按天聚合的用量（本地时区），缺的天补零。"""
+        import datetime as _dt
+        start_day = _dt.date.today() - _dt.timedelta(days=days - 1)
+        start_ts = time.mktime(_dt.datetime.combine(start_day, _dt.time.min).timetuple())
+        buckets: dict[str, dict[str, int]] = {}
+        for offset in range(days):
+            day = (start_day + _dt.timedelta(days=offset)).isoformat()
+            buckets[day] = {"requests": 0, "tokens": 0}
+        for row in self.query(
+            "SELECT ts, total_tokens FROM usage_events WHERE ts>=? AND status='success'",
+            (start_ts,),
+        ):
+            day = _dt.datetime.fromtimestamp(row["ts"]).date().isoformat()
+            if day in buckets:
+                buckets[day]["requests"] += 1
+                buckets[day]["tokens"] += int(row["total_tokens"] or 0)
+        return [{"date": day, **stats} for day, stats in buckets.items()]
 
     def overview_usage(self) -> dict[str, Any]:
         now = time.time()

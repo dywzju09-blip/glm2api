@@ -39,7 +39,7 @@ def _resolve_admin_key(db) -> str:
     return generated
 
 
-def _start_maintenance(db) -> None:
+def _start_maintenance(db, pool) -> None:
     def worker() -> None:
         import time
         while True:
@@ -51,8 +51,25 @@ def _start_maintenance(db) -> None:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("清理用量事件失败: %s", exc)
 
-    thread = threading.Thread(target=worker, daemon=True, name="maintenance")
-    thread.start()
+    def quota_worker() -> None:
+        import time
+        from . import quota as quota_mod
+        while True:
+            time.sleep(900)
+            try:
+                for row in db.list_accounts():
+                    if row["type"] != "official" or row["status"] != "active":
+                        continue
+                    try:
+                        data = quota_mod.fetch_plan_quota(row["secret"], row["base_url"])
+                        db.save_quota(int(row["id"]), data)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("账号额度刷新失败 id=%s error=%s", row["id"], exc)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("额度刷新循环异常: %s", exc)
+
+    threading.Thread(target=worker, daemon=True, name="maintenance").start()
+    threading.Thread(target=quota_worker, daemon=True, name="quota-refresh").start()
 
 
 def create_app() -> FastAPI:
@@ -100,6 +117,6 @@ def create_app() -> FastAPI:
             "open_mode": db.count_active_keys() == 0,
         }
 
-    _start_maintenance(db)
+    _start_maintenance(db, pool)
     logger.info("GLM Studio 就绪 版本=%s 账号数=%s", __version__, len(pool.all_runtimes()))
     return app

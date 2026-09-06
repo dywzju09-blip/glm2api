@@ -123,41 +123,71 @@
         ${metricCard("对外 Keys", `${c.keys_active}/${c.keys_total}`, c.open_mode ? "⚠ 开放模式（无 Key 校验）" : "已开启鉴权")}
       </div>`;
 
-    let accountCards;
-    if (!data.accounts.length) {
-      accountCards = `<div class="panel"><div class="empty">
-        <div class="big">账号池是空的</div>
-        到「账号池」页面添加 GLM 网页账号（refresh_token）或智谱官方 API Key<br>
-        不添加任何账号也可以先用「游客」账号试跑
-      </div></div>`;
-    } else {
-      accountCards = `<div class="usage-grid">` + data.accounts.map((a) => `
-        <div class="usage-card">
-          <div class="row1">
-            <span class="dot ${a.state}"></span>
-            <span class="name" title="${esc(a.name)}">${esc(a.name)}</span>
-            <div class="right">
-              <span class="badge ${TYPE_CLASS[a.type]}">${TYPE_LABEL[a.type]}</span>
-              ${stateBadge(a)}
-            </div>
-          </div>
-          ${barBlock("近 5 小时 Token", a.usage.tokens_5h, a.limit_5h)}
-          ${barBlock("近 7 天 Token", a.usage.tokens_7d, a.limit_7d)}
-          <div class="foot">
-            <span>今日 <b>${fmtNum(a.usage.req_today)}</b> 次 / <b>${fmtTokens(a.usage.tokens_today)}</b></span>
-            <span>7天成功率 <b>${a.success_rate_7d == null ? "—" : a.success_rate_7d + "%"}</b></span>
-            <span>优先级 <b>${a.priority}</b></span>
-          </div>
-          ${a.last_error ? `<div class="err" title="${esc(a.last_error)}">最近错误: ${esc(a.last_error.slice(0, 90))}</div>` : ""}
-        </div>`).join("") + `</div>`;
-    }
-
     $("#view").innerHTML = `
-      <div class="page-head"><h1>仪表盘</h1><span class="sub">账号池整体状态与每个账号的 5h / 7d 滚动窗口用量</span></div>
+      <div class="page-head"><h1>仪表盘</h1><span class="sub">整体状态与每日 Token 用量趋势</span></div>
       ${c.open_mode ? `<div class="notice">当前处于<b>开放模式</b>：还没有创建任何对外 Key，所有 /v1 接口无需鉴权即可调用。请尽快到「API Keys」创建 Key。</div>` : ""}
       ${cards}
-      <div class="page-head" style="margin-top:24px"><h1 style="font-size:15px">账号用量</h1></div>
-      ${accountCards}`;
+      <div class="panel" style="margin-top:6px">
+        <div class="panel-head">近 14 天 Token 用量<span class="sub">悬停柱子查看当日请求次数与 Token 明细</span></div>
+        <div class="chart-wrap">${dailyChart(data.daily || [])}</div>
+      </div>`;
+  }
+
+  function niceCeil(v) {
+    if (v <= 0) return 1;
+    const p = Math.pow(10, Math.floor(Math.log10(v)));
+    for (const m of [1, 2, 5, 10]) if (m * p >= v) return m * p;
+    return v;
+  }
+
+  function dailyChart(daily) {
+    const W = 880, H = 300, padL = 58, padR = 18, padT = 30, padB = 36;
+    const innerW = W - padL - padR, innerH = H - padT - padB;
+    const n = daily.length || 1;
+    const maxTok = Math.max(...daily.map((d) => d.tokens), 0);
+    const top = niceCeil(maxTok);
+    const bw = Math.max(12, Math.min(46, (innerW / n) * 0.62));
+    const parts = [];
+
+    parts.push(`<defs>
+      <linearGradient id="gBar" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#8b5cf6"/><stop offset="100%" stop-color="#4f46e5"/>
+      </linearGradient>
+      <linearGradient id="gBarToday" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#34d399"/><stop offset="100%" stop-color="#059669"/>
+      </linearGradient>
+    </defs>`);
+
+    for (let i = 0; i <= 4; i++) {
+      const v = (top * i) / 4;
+      const y = padT + innerH - (innerH * i) / 4;
+      parts.push(`<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" class="grid"/>`);
+      parts.push(`<text x="${padL - 9}" y="${y + 4}" text-anchor="end" class="axis">${fmtTokens(v)}</text>`);
+    }
+    parts.push(`<line x1="${padL}" y1="${padT + innerH}" x2="${W - padR}" y2="${padT + innerH}" stroke="var(--border)" stroke-width="1.2"/>`);
+
+    daily.forEach((d, i) => {
+      const cx = padL + (innerW * (i + 0.5)) / n;
+      const h = top > 0 ? (d.tokens / top) * innerH : 0;
+      const y = padT + innerH - h;
+      const isToday = i === n - 1;
+      if (d.tokens > 0) {
+        parts.push(`<rect x="${(cx - bw / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" ` +
+          `height="${Math.max(h, 2).toFixed(1)}" rx="5" fill="url(#${isToday ? "gBarToday" : "gBar"})" ` +
+          `class="cbar${isToday ? " today" : ""}" opacity="0.92"` +
+          `><title>${d.date}（${isToday ? "今天" : "周" + "日一二三四五六"[new Date(d.date + "T12:00:00").getDay()]}）\n请求：${fmtNum(d.requests)} 次\nToken：${fmtNum(d.tokens)}</title></rect>`);
+        parts.push(`<text x="${cx.toFixed(1)}" y="${(y - 7).toFixed(1)}" text-anchor="middle" class="axis" style="font-size:10px">${fmtTokens(d.tokens)}</text>`);
+      } else {
+        parts.push(`<rect x="${(cx - 1.5).toFixed(1)}" y="${padT + innerH - 3}" width="3" height="3" rx="1.5" class="cbar-empty"/>`);
+      }
+      if (i % 2 === 1 || isToday) {
+        parts.push(`<text x="${cx.toFixed(1)}" y="${H - 12}" text-anchor="middle" class="axis">${d.date.slice(5)}</text>`);
+      }
+    });
+    if (maxTok === 0) {
+      parts.push(`<text x="${W / 2}" y="${padT + innerH / 2}" text-anchor="middle" class="axis" style="font-size:13px">暂无用量数据 — 通过 /v1 接口发起请求后，这里会展示每日 Token 用量</text>`);
+    }
+    return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" class="usage-chart">${parts.join("")}</svg>`;
   }
 
   function metricCard(label, value, detail, valueClass) {
@@ -169,6 +199,34 @@
   }
 
   // ---------- 页面：账号池 ----------
+  function quotaBars(a) {
+    const q = a.quota;
+    if (!q || !q.windows || !q.windows.length) {
+      return `<span class="muted" style="font-size:11px">点击「测试」拉取官方额度</span>`;
+    }
+    const level = q.level ? `<span class="badge official" style="margin-left:6px">${esc(q.level)} 档</span>` : "";
+    const bars = q.windows.map((w) => {
+      let pct = Math.min(100, w.percent || 0), cls = "";
+      if (pct >= 90) cls = " full"; else if (pct >= 70) cls = " warn";
+      const reset = w.reset_at ? `，${fmtTime(w.reset_at)} 重置` : "";
+      return `<div class="cell-bars">
+        <div class="bar-caption"><span>${esc(w.label)} 窗口</span>
+          <b>${fmtNum(w.used)} / ${fmtNum(w.total)}（${w.percent}%）</b></div>
+        <div class="bar${cls}" title="剩余 ${fmtNum(w.remaining)}${reset}"><i style="width:${pct.toFixed(1)}%"></i></div>
+      </div>`;
+    }).join("");
+    const updated = q.updated_at ? `<div class="muted" style="font-size:10.5px;margin-top:3px">${ago(q.updated_at)}更新</div>` : "";
+    return `<div style="display:flex;flex-direction:column;gap:4px">${bars}${updated}</div>${level}`;
+  }
+
+  function usageCell(a) {
+    if (a.type === "official") return quotaBars(a);
+    return `<div class="cell-bars">
+      ${barBlock("5h · " + fmtNum(a.usage.req_5h) + " 次", a.usage.tokens_5h, a.limit_5h).replace("Token", "")}
+      ${barBlock("7d · " + fmtNum(a.usage.req_7d) + " 次", a.usage.tokens_7d, a.limit_7d).replace("Token", "")}
+    </div>`;
+  }
+
   async function viewAccounts() {
     const data = await api("/accounts");
     const rows = data.accounts.map((a) => `
@@ -177,12 +235,7 @@
         <td><span class="badge ${TYPE_CLASS[a.type]}">${TYPE_LABEL[a.type]}</span></td>
         <td>${stateBadge(a)}</td>
         <td class="num">${a.priority}</td>
-        <td>
-          <div class="cell-bars">
-            ${barBlock("5h · " + fmtNum(a.usage.req_5h) + " 次", a.usage.tokens_5h, a.limit_5h).replace("Token", "")}
-            ${barBlock("7d · " + fmtNum(a.usage.req_7d) + " 次", a.usage.tokens_7d, a.limit_7d).replace("Token", "")}
-          </div>
-        </td>
+        <td>${usageCell(a)}</td>
         <td class="num">
           <div>${fmtNum(a.usage.req_today)}</div>
           <div class="muted" style="font-size:11px">${fmtTokens(a.usage.tokens_today)} tok</div>
@@ -192,6 +245,7 @@
         <td>
           <div class="actions">
             <button class="btn sm" data-act="test" data-id="${a.id}">测试</button>
+            ${a.type === "official" ? `<button class="btn sm" data-act="quota" data-id="${a.id}">刷新额度</button>` : ""}
             <button class="btn sm" data-act="edit" data-id="${a.id}">编辑</button>
             ${a.status === "active"
               ? `<button class="btn sm" data-act="disable" data-id="${a.id}">禁用</button>`
@@ -212,7 +266,7 @@
         <table class="wide">
           <thead><tr>
             <th>账号</th><th>类型</th><th>状态</th><th class="num">优先级</th>
-            <th>滚动窗口用量</th><th class="num">今日</th><th class="num">7天成功率</th><th>最近使用</th><th style="text-align:right">操作</th>
+            <th>套餐额度 / 用量</th><th class="num">今日</th><th class="num">7天成功率</th><th>最近使用</th><th style="text-align:right">操作</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>` : `<div class="empty"><div class="big">还没有账号</div>点击右上角「添加账号」开始<br>支持 chatglm.cn 网页账号 refresh_token、游客模式、智谱开放平台 API Key</div>`}
@@ -228,6 +282,11 @@
             btn.textContent = "测试中"; btn.disabled = true;
             const r = await api(`/accounts/${id}/test`, { method: "POST" });
             toast(r.ok ? "✓ " + r.message : "✗ " + r.message, r.ok ? "ok" : "err");
+            viewAccounts();
+          } else if (act === "quota") {
+            btn.textContent = "刷新中"; btn.disabled = true;
+            const r = await api(`/accounts/${id}/quota`, { method: "POST" });
+            toast("✓ 额度已刷新", "ok");
             viewAccounts();
           } else if (act === "edit") {
             const a = data.accounts.find((x) => x.id === id);
@@ -399,7 +458,7 @@
 
     $("#view").innerHTML = `
       <div class="page-head">
-        <h1>API Keys</h1><span class="sub">对外发放的统一 Key：调用方用它访问 /v1 接口，可设置限流与模型白名单</span>
+        <h1>API Keys</h1><span class="sub">对外发放的统一 Key：调用方用它访问 /v1 接口，可设置限流与模型白名单（额度请看账号池的套餐余量）</span>
         <div class="spacer"></div>
         <button class="btn primary" id="add-key-btn">＋ 创建 Key</button>
       </div>
@@ -598,6 +657,7 @@
         <div class="field">
           <label>官方 API Base URL</label>
           <input type="text" id="s-baseurl" value="${esc(s.official_base_url)}">
+        </div>
         </div>
         <div class="field">
           <label>官方通道模型列表（每行一个）</label>

@@ -510,6 +510,15 @@ code.inline {
   line-height: 1.6;
 }
 
+/* ---------- 用量图 ---------- */
+.chart-wrap { padding: 14px 16px 10px; }
+.usage-chart { width: 100%; height: auto; display: block; }
+.usage-chart .grid { stroke: var(--border-soft); }
+.usage-chart .axis { fill: var(--text-3); font-size: 11px; font-family: var(--font); }
+.usage-chart .cbar { cursor: pointer; transition: opacity .12s; }
+.usage-chart .cbar:hover { opacity: 1 !important; }
+.usage-chart .cbar-empty { fill: var(--border); }
+
 @media (max-width: 860px) {
   .layout { flex-direction: column; }
   .sidebar { width: 100%; height: auto; position: static; flex-direction: row; align-items: center; padding: 10px; gap: 4px; overflow-x: auto; }
