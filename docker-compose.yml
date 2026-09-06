@@ -4,11 +4,10 @@ services:
     container_name: glm-studio
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "${GLM_PORT:-8000}:8000"
     environment:
-      # 管理面板登录密钥（务必改成强随机值）
-      ADMIN_KEY: "please-change-me"
-      # 对外监听端口（容器内）
+      # 管理面板登录密钥（在部署机的 .env 里设置，不设置则首次启动自动生成）
+      ADMIN_KEY: "${ADMIN_KEY:-}"
       PORT: "8000"
     volumes:
       - ./data:/app/data
