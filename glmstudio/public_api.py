@@ -17,6 +17,11 @@ from .glmcompat.services.anthropic_adapter import (
     openai_to_anthropic_response,
 )
 from .glmcompat.services.glm_client import UpstreamAPIError
+from .glmcompat.services.responses_adapter import (
+    ResponsesStreamAccumulator,
+    openai_to_responses,
+    responses_to_openai,
+)
 from .pool import WEB_MODELS, AccountPool, AccountRuntime, OfficialClient
 
 logger = logging.getLogger("glmstudio.api")
@@ -392,6 +397,84 @@ def anthropic_messages(request: Request, payload: dict = Body(...)):
                       "completion_tokens": int(usage.get("output_tokens", 0) or 0)}
     recorder.finish()
     return JSONResponse(anthropic_result)
+
+
+@router.post("/v1/responses")
+def openai_responses(request: Request, payload: dict = Body(...)):
+    """OpenAI Responses 协议（Codex 等客户端使用）。"""
+    state = request.app.state
+    db: Database = state.db
+    pool: AccountPool = state.pool
+    start = time.time()
+
+    ctx, err = authenticate(db, request)
+    if err:
+        return err
+    limit_err = enforce_key_limits(db, ctx)
+    if limit_err:
+        return limit_err
+
+    openai_payload = responses_to_openai(payload)
+    model = str(openai_payload.get("model", "")).strip()
+    if not model_allowed(ctx, model):
+        return _error_response(f"该 Key 无权使用模型 {model}", 403, "permission_error")
+    stream = bool(payload.get("stream"))
+
+    try:
+        rt, result, kind = call_with_failover(pool, openai_payload, stream)
+    except Exception as exc:  # noqa: BLE001
+        db.add_event({"key_id": ctx.id, "key_name": ctx.name, "model": model,
+                      "status": "error", "error": str(exc), "latency_ms": int((time.time() - start) * 1000),
+                      "client_ip": _client_ip(request)})
+        return _error_response(f"上游调用失败: {exc}", 502)
+
+    requested_model = str(payload.get("model", model))
+    recorder = _UsageRecorder(db, pool, rt, ctx, model, stream, _client_ip(request), start)
+    if stream:
+        accumulator = ResponsesStreamAccumulator(requested_model)
+        source_kind = kind
+
+        def generate() -> Generator[bytes, None, None]:
+            status, error = "success", ""
+            try:
+                for event in accumulator.start_response():
+                    yield event.encode("utf-8")
+                if source_kind == "web_stream":
+                    for chunk in result:
+                        recorder.scan(chunk)
+                        for event in accumulator.feed_chunk(chunk):
+                            yield event.encode("utf-8")
+                else:
+                    buffer = b""
+                    while True:
+                        piece = result.read(4096)
+                        if not piece:
+                            break
+                        buffer += piece
+                        while b"\n\n" in buffer:
+                            block, buffer = buffer.split(b"\n\n", 1)
+                            recorder.scan(block)
+                            for event in accumulator.feed_chunk(block + b"\n\n"):
+                                yield event.encode("utf-8")
+            except Exception as exc:  # noqa: BLE001
+                status, error = "error", str(exc)
+                yield f'data: {json.dumps({"type": "error", "message": error})}\n\n'.encode()
+            finally:
+                recorder.finish(status, error)
+                try:
+                    result.close()
+                except Exception:
+                    pass
+
+        return StreamingResponse(generate(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    responses_result = openai_to_responses(result, requested_model)
+    usage = responses_result.get("usage") or {}
+    recorder.usage = {"prompt_tokens": int(usage.get("input_tokens", 0) or 0),
+                      "completion_tokens": int(usage.get("output_tokens", 0) or 0)}
+    recorder.finish()
+    return JSONResponse(responses_result)
 
 
 @router.post("/v1/images/generations")
