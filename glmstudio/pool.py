@@ -24,7 +24,7 @@ from .glmcompat.config import (
 )
 from .glmcompat.model_variants import expand_model_variants, split_model_features
 from .glmcompat.services.glm_auth import GLMAccessTokenManager
-from .glmcompat.services.glm_client import GLMWebClient
+from .glmcompat.services.glm_client import GLMWebClient, UpstreamAPIError
 
 logger = logging.getLogger("glmstudio.pool")
 
@@ -75,7 +75,17 @@ class OfficialClient:
                 "Accept": "text/event-stream" if stream else "application/json",
             },
         )
-        return urllib.request.urlopen(request, timeout=self.timeout)
+        try:
+            return urllib.request.urlopen(request, timeout=self.timeout)
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="ignore")[:200]
+            except Exception:  # noqa: BLE001
+                pass
+            raise UpstreamAPIError(
+                exc.code, f"智谱官方 API HTTP {exc.code}" + (f" | {detail}" if detail else "")
+            ) from exc
 
 
 class AccountRuntime:
@@ -332,20 +342,36 @@ class AccountPool:
             if rt.is_official:
                 client: OfficialClient = rt.client
                 import json as _json
-                request = urllib.request.Request(
-                    f"{client.base_url}/chat/completions",
-                    data=_json.dumps({
-                        "model": (self.settings.get("official_models") or ["glm-4-flash"])[0],
-                        "messages": [{"role": "user", "content": "hi"}],
-                        "max_tokens": 1, "stream": False,
-                    }).encode("utf-8"),
-                    method="POST",
-                    headers={"Authorization": f"Bearer {client.api_key}",
-                             "Content-Type": "application/json"},
-                )
-                with urllib.request.urlopen(request, timeout=30) as resp:
-                    _json.loads(resp.read().decode("utf-8"))
-                return {"ok": True, "message": "官方 API Key 可用"}
+                import urllib.error as _urlerror
+                candidates = ["glm-4-flash"] + list(self.settings.get("official_models") or [])
+                last_msg = ""
+                for model in dict.fromkeys(candidates):
+                    request = urllib.request.Request(
+                        f"{client.base_url}/chat/completions",
+                        data=_json.dumps({
+                            "model": model,
+                            "messages": [{"role": "user", "content": "hi"}],
+                            "max_tokens": 1, "stream": False,
+                        }).encode("utf-8"),
+                        method="POST",
+                        headers={"Authorization": f"Bearer {client.api_key}",
+                                 "Content-Type": "application/json"},
+                    )
+                    try:
+                        with urllib.request.urlopen(request, timeout=30) as resp:
+                            _json.loads(resp.read().decode("utf-8"))
+                        return {"ok": True,
+                                "message": f"官方 API Key 可用（{model} 测试通过）"}
+                    except _urlerror.HTTPError as exc:
+                        detail = ""
+                        try:
+                            body = exc.read().decode("utf-8", errors="ignore")
+                            payload = _json.loads(body)
+                            detail = str((payload.get("error") or {}).get("message", body))[:120]
+                        except Exception:  # noqa: BLE001
+                            pass
+                        last_msg = f"{model}: HTTP {exc.code}" + (f" {detail}" if detail else "")
+                return {"ok": False, "message": f"全部模型测试失败；最后错误 → {last_msg}"}
             token = rt.client.auth.get_access_token_for_account(0)
             if token:
                 return {"ok": True, "message": "refresh_token 有效，access_token 获取成功"}
