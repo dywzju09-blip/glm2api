@@ -1,0 +1,14 @@
+services:
+  glm-studio:
+    build: .
+    container_name: glm-studio
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # 管理面板登录密钥（务必改成强随机值）
+      ADMIN_KEY: "please-change-me"
+      # 对外监听端口（容器内）
+      PORT: "8000"
+    volumes:
+      - ./data:/app/data

@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GLM Studio — 账号聚合网关</title>
+  <link rel="stylesheet" href="/admin/assets/admin.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%236d6df6'/><text x='16' y='22' font-size='15' font-weight='bold' text-anchor='middle' fill='white'>G</text></svg>">
+</head>
+<body>
+
+<!-- 登录 -->
+<div class="login-wrap" id="login" style="display:none">
+  <div class="login-card">
+    <div class="logo">
+      <div class="logo-mark">G</div>
+      <div class="logo-text">GLM Studio<small>多账号聚合网关</small></div>
+    </div>
+    <h2>管理员登录</h2>
+    <div class="sub">输入管理密钥（ADMIN_KEY）进入管理面板</div>
+    <div class="field">
+      <input type="password" id="login-key" placeholder="管理密钥" autocomplete="current-password">
+    </div>
+    <button class="btn primary" id="login-btn">登 录</button>
+    <div class="login-err" id="login-err"></div>
+  </div>
+</div>
+
+<!-- 主界面 -->
+<div id="app">
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="logo">
+        <div class="logo-mark">G</div>
+        <div class="logo-text">GLM Studio<small id="version">v0.1.0</small></div>
+      </div>
+      <nav class="nav" id="nav"></nav>
+      <div class="sidebar-footer">
+        <div style="margin-bottom:6px">OpenAI 兼容端点<br><code class="inline">/v1/chat/completions</code></div>
+        <button class="logout" id="logout-btn">退出登录</button>
+      </div>
+    </aside>
+    <main class="main"><div class="main-inner" id="view"></div></main>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+<div id="modal-root"></div>
+
+<script src="/admin/assets/admin.js"></script>
+</body>
+</html>
