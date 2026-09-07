@@ -63,6 +63,7 @@ def _start_maintenance(db, pool) -> None:
                     try:
                         data = quota_mod.fetch_plan_quota(row["secret"], row["base_url"])
                         db.save_quota(int(row["id"]), data)
+                        pool.update_quota_cache(int(row["id"]), data)
                     except Exception as exc:  # noqa: BLE001
                         logger.debug("账号额度刷新失败 id=%s error=%s", row["id"], exc)
             except Exception as exc:  # noqa: BLE001

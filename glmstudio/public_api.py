@@ -140,9 +140,9 @@ def call_with_failover(pool: AccountPool, payload: dict[str, Any], stream: bool,
             return rt, result, kind
         except UpstreamAPIError as exc:
             status = getattr(exc, "status_code", None)
-            # 官方通道的 429 是并发超限，瞬时性的：退避后在原账号重试，
-            # 等并发的其他请求完成腾出槽位，而不是冷却换号（单账号池会 503）。
-            if status == 429 and rt.is_official:
+            # 官方通道的 429 若是并发超限（瞬时性的）：退避后在原账号重试，
+            # 等并发的其他请求完成腾出槽位；若是额度耗尽则重试无意义，直接切换账号。
+            if status == 429 and rt.is_official and not pool.is_quota_error(exc):
                 for attempt in range(3):
                     time.sleep(1.5)
                     try:

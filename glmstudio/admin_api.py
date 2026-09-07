@@ -56,13 +56,14 @@ def _parse_quota(row: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
 
-def _refresh_quota(db: Database, row: dict[str, Any]) -> str:
+def _refresh_quota(db: Database, pool: AccountPool, row: dict[str, Any]) -> str:
     """拉取官方账号的 CodingPlan 真实额度并存库，返回错误信息（空=成功）。"""
     if row["type"] != "official":
         return ""
     try:
         data = quota_mod.fetch_plan_quota(row["secret"], row["base_url"])
         db.save_quota(int(row["id"]), data)
+        pool.update_quota_cache(int(row["id"]), data)
         return ""
     except Exception as exc:  # noqa: BLE001
         return f"额度拉取失败: {str(exc)[:150]}"
@@ -74,7 +75,8 @@ def _account_view(db: Database, pool: AccountPool, row: dict[str, Any]) -> dict[
     cooldown_left = max(0.0, float(row["cooldown_until"] or 0) - time.time())
     limited = (int(row["limit_daily"] or 0) > 0 and usage["req_today"] >= int(row["limit_daily"])) or \
               (int(row["limit_5h"] or 0) > 0 and usage["tokens_5h"] >= int(row["limit_5h"])) or \
-              (int(row["limit_7d"] or 0) > 0 and usage["tokens_7d"] >= int(row["limit_7d"]))
+              (int(row["limit_7d"] or 0) > 0 and usage["tokens_7d"] >= int(row["limit_7d"])) or \
+              (row["type"] == "official" and AccountPool.quota_exhausted(row))
     if row["status"] != "active":
         state = "disabled"
     elif cooldown_left > 0:
@@ -159,7 +161,7 @@ def create_account(request: Request, payload: dict = Body(...)):
         "limit_daily": int(payload.get("limit_daily", 0) or 0),
     })
     if account_type == "official":
-        _refresh_quota(state.db, row)  # 新增官方账号时立即拉取 CodingPlan 真实额度
+        _refresh_quota(state.db, state.pool, row)  # 新增官方账号时立即拉取 CodingPlan 真实额度
         row = state.db.get_account(int(row["id"])) or row
     state.pool.reload()
     logger.info("新增账号 id=%s name=%s type=%s", row["id"], name, account_type)
@@ -210,7 +212,7 @@ def test_account(request: Request, account_id: int):
     result = state.pool.test_account(account_id)
     row = state.db.get_account(account_id)
     if row and row["type"] == "official":
-        quota_err = _refresh_quota(state.db, row)
+        quota_err = _refresh_quota(state.db, state.pool, row)
         if quota_err:
             result.setdefault("message", "")
             result["message"] = (str(result.get("message", "")) + "；" + quota_err).strip("；")
@@ -224,7 +226,7 @@ def refresh_quota(request: Request, account_id: int):
     row = state.db.get_account(account_id)
     if row is None:
         raise HTTPException(404, "账号不存在")
-    err = _refresh_quota(state.db, row)
+    err = _refresh_quota(state.db, state.pool, row)
     if err:
         raise HTTPException(502, err)
     row = state.db.get_account(account_id)

@@ -211,11 +211,35 @@ class AccountPool:
         return _SingleAccountClient(config, logger, on_token_rotate)
 
     # ---------- 选择 ----------
+    @staticmethod
+    def quota_exhausted(row: dict[str, Any]) -> bool:
+        """官方额度任一窗口已耗尽且尚未到重置时间。"""
+        raw = str(row.get("quota_json") or "")
+        if not raw:
+            return False
+        try:
+            import json as _json
+            data = _json.loads(raw)
+        except (ValueError, TypeError):
+            return False
+        now = time.time()
+        for w in data.get("windows", []):
+            if not isinstance(w, dict):
+                continue
+            reset_at = w.get("reset_at") or 0
+            exhausted = (w.get("remaining") is not None and w["remaining"] <= 0) or \
+                (w.get("percent") or 0) >= 100
+            if exhausted and (not reset_at or reset_at > now):
+                return True
+        return False
+
     def _eligible(self, rt: AccountRuntime) -> bool:
         row = rt.row
         if row["status"] != "active":
             return False
         if float(row["cooldown_until"] or 0) > time.time():
+            return False
+        if rt.is_official and self.quota_exhausted(row):
             return False
         usage = self.db.account_window_usage(rt.id)
         if int(row["limit_daily"] or 0) > 0 and usage["req_today"] >= int(row["limit_daily"]):
@@ -225,6 +249,15 @@ class AccountPool:
         if int(row["limit_7d"] or 0) > 0 and usage["tokens_7d"] >= int(row["limit_7d"]):
             return False
         return True
+
+    def update_quota_cache(self, account_id: int, quota: dict[str, Any]) -> None:
+        """额度刷新后同步内存里的账号行，使调度立即可见（无需整体 reload）。"""
+        import json as _json
+        rt = self.runtime(account_id)
+        if rt:
+            with self._lock:
+                rt.row["quota_json"] = _json.dumps(quota, ensure_ascii=False)
+                rt.row["quota_at"] = quota.get("updated_at", time.time())
 
     def candidates(self, channel: str | None, exclude: set[int],
                    max_count: int = 3) -> list[AccountRuntime]:
@@ -265,8 +298,16 @@ class AccountPool:
             rt.row["cooldown_until"] = 0
             rt.row["last_error"] = ""
 
+    @staticmethod
+    def is_quota_error(exc: Exception) -> bool:
+        """识别上游"额度/余额耗尽"类错误（区别于并发超限）。"""
+        message = str(exc)
+        return ("1113" in message or "余额不足" in message
+                or "额度已用" in message or "套餐额度" in message
+                or "resource" in message.lower())
+
     def mark_failure(self, account_id: int, exc: Exception) -> str:
-        """返回失败类别: auth | busy | network | unknown。"""
+        """返回失败类别: auth | quota | busy | network | unknown。"""
         rt = self.runtime(account_id)
         row = rt.row if rt else None
         if row is None:
@@ -276,6 +317,7 @@ class AccountPool:
         if isinstance(exc, urllib.error.HTTPError):
             status_code = exc.code
         is_auth = status_code in (401, 403) or "token" in message.lower()
+        is_quota = self.is_quota_error(exc)
         is_busy = status_code == 429 or "忙碌" in message or "请等待" in message
         is_network = isinstance(exc, (urllib.error.URLError, TimeoutError)) or \
             ("timed out" in message.lower())
@@ -284,6 +326,9 @@ class AccountPool:
         now = time.time()
         if is_auth:
             category, cooldown = "auth", 600.0
+        elif is_quota:
+            # 额度耗尽：冷却到下次额度刷新即可，真正的跳过由 quota_exhausted 判定
+            category, cooldown = "quota", 600.0
         elif is_busy:
             # 官方通道的 429 是并发超限（瞬时），冷却时间远小于网页通道的忙碌
             category, cooldown = "busy", 15.0 if rt.is_official else 60.0
@@ -303,6 +348,17 @@ class AccountPool:
         if disable:
             row["status"] = "disabled"
             logger.error("账号连续认证失败已自动禁用 id=%s name=%s", account_id, row["name"])
+        if category == "quota" and rt.is_official:
+            # 立即复核官方额度并写入，让"跳过耗尽账号"由真实数据驱动
+            try:
+                from . import quota as quota_mod
+                data = quota_mod.fetch_plan_quota(row["secret"], row["base_url"])
+                self.db.save_quota(account_id, data)
+                self.update_quota_cache(account_id, data)
+                logger.info("账号额度复核完成 id=%s windows=%s", account_id,
+                            [(w.get("label"), w.get("percent")) for w in data.get("windows", [])])
+            except Exception as exc2:  # noqa: BLE001
+                logger.debug("额度复核失败 id=%s error=%s", account_id, exc2)
         logger.warning("账号请求失败 id=%s name=%s category=%s fail=%s error=%s",
                        account_id, row["name"], category, fail_count, message[:200])
         return category
