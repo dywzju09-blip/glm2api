@@ -55,8 +55,10 @@ def _start_maintenance(db, pool) -> None:
         import time
         from . import quota as quota_mod
         while True:
-            time.sleep(900)
+            # 高水位自适应：任一窗口用量 ≥80% 时加密到 3 分钟一轮，平时 15 分钟
+            time.sleep(180)
             try:
+                hot = False
                 for row in db.list_accounts():
                     if row["type"] != "official" or row["status"] != "active":
                         continue
@@ -64,10 +66,14 @@ def _start_maintenance(db, pool) -> None:
                         data = quota_mod.fetch_plan_quota(row["secret"], row["base_url"])
                         db.save_quota(int(row["id"]), data)
                         pool.update_quota_cache(int(row["id"]), data)
+                        if any((w.get("percent") or 0) >= 80 for w in data.get("windows", [])):
+                            hot = True
                     except Exception as exc:  # noqa: BLE001
                         logger.debug("账号额度刷新失败 id=%s error=%s", row["id"], exc)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("额度刷新循环异常: %s", exc)
+            if not hot:
+                time.sleep(720)  # 无高水位账号：补足到 15 分钟一轮
 
     threading.Thread(target=worker, daemon=True, name="maintenance").start()
     threading.Thread(target=quota_worker, daemon=True, name="quota-refresh").start()
