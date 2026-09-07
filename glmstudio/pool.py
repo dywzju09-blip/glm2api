@@ -276,13 +276,17 @@ class AccountPool:
         if not pool:
             return []
         pool.sort(key=lambda rt: (int(rt.row["priority"]), rt.id))
+        # 优先级分层：只在最高层（数字最小）内选取；整层不可用（冷却/超额/被排除）
+        # 时才落到下一层——低优先级账号是备胎，不参与日常轮换。
+        top = int(pool[0].row["priority"])
+        tier = [rt for rt in pool if int(rt.row["priority"]) == top]
         strategy = self.settings.get("strategy", "round_robin")
         if strategy == "priority":
-            return pool[:max_count]
-        # 轮询：同优先级内按 cursor 起始旋转
+            return tier[:max_count]
+        # 轮询：层内按 cursor 起始旋转
         channel_key = channel or "all"
-        start = self._cursor.get(channel_key, 0) % len(pool)
-        ordered = pool[start:] + pool[:start]
+        start = self._cursor.get(channel_key, 0) % len(tier)
+        ordered = tier[start:] + tier[:start]
         with self._lock:
             self._cursor[channel_key] = start + 1
         return ordered[:max_count]

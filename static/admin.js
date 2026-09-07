@@ -633,8 +633,8 @@
         <div class="field">
           <label>调度策略</label>
           <select id="s-strategy">
-            <option value="round_robin" ${s.strategy === "round_robin" ? "selected" : ""}>轮询（同优先级账号轮流使用）</option>
-            <option value="priority" ${s.strategy === "priority" ? "selected" : ""}>优先级（优先用排前面的账号）</option>
+            <option value="round_robin" ${s.strategy === "round_robin" ? "selected" : ""}>轮询（最高优先级层内轮流；整层不可用才落下一层）</option>
+            <option value="priority" ${s.strategy === "priority" ? "selected" : ""}>优先级（永远用排最前面的可用账号）</option>
           </select>
         </div>
         <div class="switch-row">
