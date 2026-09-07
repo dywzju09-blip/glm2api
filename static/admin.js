@@ -347,8 +347,9 @@
                 <div class="hint" id="f-secret-hint"></div>
               </div>
               <div class="field span2" id="f-baseurl-wrap" style="display:none">
-                <label>API Base URL（可选，留空用默认）</label>
-                <input type="text" id="f-baseurl" value="${esc(a ? a.base_url : "")}" placeholder="https://open.bigmodel.cn/api/paas/v4">
+                <label>API Base URL（CodingPlan 留空即可）</label>
+                <input type="text" id="f-baseurl" value="${esc(a ? a.base_url : "")}" placeholder="留空 = CodingPlan 专属端点（推荐）">
+                <div class="hint">CodingPlan 套餐 Key 直接留空；仅当添加普通按量付费 Key 时才填 https://open.bigmodel.cn/api/paas/v4</div>
               </div>
               <div class="field">
                 <label>5h Token 限额（0 不限）</label>
@@ -379,7 +380,7 @@
     const secretHints = {
       web: "获取方法：浏览器登录 chatglm.cn → F12 → Application → Cookies → 复制 __Secure-next-auth.session-token 的值",
       guest: "游客模式无需填写任何凭据，额度最低，仅建议试跑用",
-      official: "在 open.bigmodel.cn 控制台创建 API Key，按 token 计费，稳定性最好",
+      official: "在 open.bigmodel.cn 控制台创建 API Key（CodingPlan 套餐直接粘贴，Base URL 留空即可）",
     };
 
     function refreshTypeUI() {
