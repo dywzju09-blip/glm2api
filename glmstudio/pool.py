@@ -64,6 +64,12 @@ class OfficialClient:
     def chat(self, payload: dict[str, Any], stream: bool):
         body = {k: v for k, v in payload.items()
                 if k not in ("web_search", "deep_research", "reasoning_effort")}
+        # 清洗 max_tokens：非法值（0/负数/超上限）会导致上游 400，修正或剔除
+        mt = body.get("max_tokens")
+        if isinstance(mt, bool) or not isinstance(mt, int) or mt < 1:
+            body.pop("max_tokens", None)
+        elif mt > 131072:
+            body["max_tokens"] = 131072
         data = __import__("json").dumps(body, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(
             f"{self.base_url}/chat/completions",
@@ -306,6 +312,27 @@ class AccountPool:
                 or "额度已用" in message or "套餐额度" in message
                 or "resource" in message.lower())
 
+    @staticmethod
+    def is_client_error(exc: Exception) -> bool:
+        """上游返回的客户端参数错误（400/422 等）：换账号也没用，应直接透传给调用方。"""
+        status = getattr(exc, "status_code", None)
+        return status is not None and 400 <= status < 500 \
+            and status not in (401, 403, 429)
+
+    @staticmethod
+    def is_auth_error(exc: Exception) -> bool:
+        """认证/授权失败：仅凭状态码 401/403 判定。
+
+        不做消息子串匹配——"max_tokens参数非法"里也含 "token"，曾导致
+        客户端参数错误被误判为账号认证失败并触发自动禁用。
+        """
+        status = getattr(exc, "status_code", None)
+        if status in (401, 403):
+            return True
+        if isinstance(exc, urllib.error.HTTPError) and exc.code in (401, 403):
+            return True
+        return False
+
     def mark_failure(self, account_id: int, exc: Exception) -> str:
         """返回失败类别: auth | quota | busy | network | unknown。"""
         rt = self.runtime(account_id)
@@ -316,7 +343,7 @@ class AccountPool:
         message = str(exc)
         if isinstance(exc, urllib.error.HTTPError):
             status_code = exc.code
-        is_auth = status_code in (401, 403) or "token" in message.lower()
+        is_auth = self.is_auth_error(exc)
         is_quota = self.is_quota_error(exc)
         is_busy = status_code == 429 or "忙碌" in message or "请等待" in message
         is_network = isinstance(exc, (urllib.error.URLError, TimeoutError)) or \

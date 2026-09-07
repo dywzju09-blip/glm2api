@@ -139,6 +139,10 @@ def call_with_failover(pool: AccountPool, payload: dict[str, Any], stream: bool,
             result, kind = _invoke_chat(rt, payload, stream)
             return rt, result, kind
         except UpstreamAPIError as exc:
+            # 客户端参数错误（如 max_tokens 非法）：任何账号都会同样报错，
+            # 不计账号失败、不切换，直接透传给调用方
+            if pool.is_client_error(exc):
+                raise
             status = getattr(exc, "status_code", None)
             # 官方通道的 429 若是并发超限（瞬时性的）：退避后在原账号重试，
             # 等并发的其他请求完成腾出槽位；若是额度耗尽则重试无意义，直接切换账号。
