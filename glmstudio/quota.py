@@ -40,9 +40,15 @@ def _window_label(item: dict[str, Any]) -> str:
 
 
 def fetch_plan_quota(api_key: str, base_url: str = "") -> dict[str, Any]:
-    """拉取 CodingPlan 额度。成功返回 {level, windows[], updated_at}；失败抛异常。"""
+    """拉取 CodingPlan 额度。成功返回 {level, windows[], updated_at}；失败抛异常。
+
+    注意：该接口故障时会返回 HTTP 200 但业务失败（success=false / 空 windows），
+    此时必须抛异常而非返回空数据——调用方据此保留最后一次有效数据。
+    """
     base = _monitor_base(base_url)
     data = _get_json(f"{base}/api/monitor/usage/quota/limit", api_key)
+    if data.get("success") is False or (data.get("code") not in (None, 200) and not data.get("data")):
+        raise RuntimeError(f"智谱额度接口业务失败: {data.get('msg') or data.get('code')}")
     payload = data.get("data") or {}
     windows = []
     for item in payload.get("limits", []):
@@ -57,6 +63,8 @@ def fetch_plan_quota(api_key: str, base_url: str = "") -> dict[str, Any]:
             "percent": float(item.get("percentage") or 0),
             "reset_at": round(reset_ms / 1000, 0) if reset_ms else None,
         })
+    if not windows:
+        raise RuntimeError("智谱额度接口返回空数据（可能故障中）")
     windows.sort(key=lambda w: 0 if w["label"] == "5h" else 1)
     return {"level": payload.get("level") or "", "windows": windows, "updated_at": time.time()}
 
